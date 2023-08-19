@@ -5,7 +5,9 @@ import com.opencsv.CSVReaderBuilder;
 import com.opencsv.exceptions.CsvValidationException;
 import com.orangetoolz.models.Lead;
 import com.orangetoolz.repositories.LeadRepository;
+import com.orangetoolz.utils.CsvUtils;
 import lombok.RequiredArgsConstructor;
+import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
 import org.springframework.web.multipart.MultipartFile;
 
@@ -14,37 +16,65 @@ import java.io.InputStreamReader;
 import java.io.Reader;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.concurrent.Callable;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
+import java.util.concurrent.*;
 
 @Service
 @RequiredArgsConstructor
 public class LeadService {
 
-    private static final int NUM_THREADS = 4; // Number of parallel threads
+//    private static final int NUM_THREADS = 4; // Number of parallel threads
+
+    private static final int NUM_CONSUMERS  = 4; // Number of parallel threads
+
+    private final BlockingQueue<Lead> leadsQueue = new LinkedBlockingQueue<>();
 
     private final LeadRepository leadRepository;
 
+//    public void processLeads(MultipartFile file) throws IOException {
+//        List<Lead> leads = parseCSV(file);
+//
+//        ExecutorService executorService = Executors.newFixedThreadPool(NUM_THREADS);
+//
+//        List<Callable<Void>> tasks = new ArrayList<>();
+//        for (Lead lead : leads) {
+//            tasks.add(() -> {
+//                leadRepository.save(lead);
+//                return null;
+//            });
+//        }
+//
+//        try {
+//            executorService.invokeAll(tasks);
+//        } catch (InterruptedException e) {
+//            Thread.currentThread().interrupt();
+//        } finally {
+//            executorService.shutdown();
+//        }
+//    }
+
+    @Async
     public void processLeads(MultipartFile file) throws IOException {
-        List<Lead> leads = parseCSV(file);
+        List<Lead> leads = CsvUtils.parseCsvFile(file);
 
-        ExecutorService executorService = Executors.newFixedThreadPool(NUM_THREADS);
+        leadsQueue.addAll(leads);
 
-        List<Callable<Void>> tasks = new ArrayList<>();
-        for (Lead lead : leads) {
-            tasks.add(() -> {
-                leadRepository.save(lead);
-                return null;
-            });
+        for (int i = 0; i < NUM_CONSUMERS; i++) {
+            new Thread(new LeadConsumer()).start();
         }
+    }
 
-        try {
-            executorService.invokeAll(tasks);
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-        } finally {
-            executorService.shutdown();
+    private class LeadConsumer implements Runnable {
+        @Override
+        public void run() {
+            while (true) {
+                try {
+                    Lead lead = leadsQueue.take();
+                    leadRepository.save(lead);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    break;
+                }
+            }
         }
     }
 
@@ -56,7 +86,7 @@ public class LeadService {
 
             String[] line;
             while ((line = csvReader.readNext()) != null) {
-                if (line.length >= 3) { // Ensure the line has the required fields
+                if (line.length >= 3) {
                     Lead lead = new Lead();
                     lead.setFirstName(line[0]);
                     lead.setLastName(line[1]);
